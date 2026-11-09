@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QPushButton, QVB
 from .. import metrics as M
 from ..analysis import Analysis
 from ..coach import Suggestion
+from ..form import FormReport
 from ..readiness import LABELS
 from .theme import C, KIND_COLORS, level_color
 from .widgets import Balise, Bar, Gauge, Tile, card, clear_layout, hbox, label, rule, scroll_page, vbox
@@ -89,6 +90,8 @@ class TodayPage(QWidget):
         else:
             sub = "Aucune course objectif programmée"
         self.root.addLayout(vbox(label(long_date(today), "h1"), label(sub, "muted"), spacing=2))
+        if an.form:
+            self.root.addWidget(self._form_card(an.form))
 
         top = QHBoxLayout()
         top.setSpacing(18)
@@ -203,6 +206,25 @@ class TodayPage(QWidget):
             lay.addWidget(label("Les jours suivants supposent que les séances précédentes sont faites ; "
                                 "la suggestion réelle tiendra compte de ta récupération du matin.", "small", wrap=True))
         lay.addStretch(1)
+        return f
+
+    def _form_card(self, fm: FormReport) -> QFrame:
+        f, lay = card()
+        lay.setContentsMargins(22, 16, 22, 16)
+        lay.setSpacing(6)
+        color = C["red"] if fm.state == "alerte" else level_color(fm.score)
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        head.addWidget(Balise(color, 34, 22), 0, Qt.AlignTop)
+        title = label(fm.title, "h2")
+        title.setStyleSheet(f"color: {color};")
+        body = vbox(label("Ta forme du jour", "small"), title, label(fm.message, "muted", wrap=True), spacing=2)
+        if fm.positives:
+            body.addWidget(label("Points forts : " + ", ".join(fm.positives) + ".", "small", wrap=True))
+        if fm.negatives:
+            body.addWidget(label("À surveiller : " + ", ".join(fm.negatives) + ".", "small", wrap=True))
+        head.addLayout(body, 1)
+        lay.addLayout(head)
         return f
 
     def _readiness_card(self) -> QFrame:

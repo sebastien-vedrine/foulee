@@ -9,6 +9,7 @@ from . import metrics as M
 from .coach import CoachContext, Phase, Suggestion, compute_phase, plan_days
 from .config import Settings
 from .db import Database
+from .form import FormReport, assess as assess_form
 from .models import ActRec, Race
 from .readiness import Readiness, compute as compute_readiness
 
@@ -65,6 +66,7 @@ class Analysis:
     paces: dict | None = None
     readiness: Readiness | None = None
     readiness_hist: dict = field(default_factory=dict)
+    form: FormReport | None = None
     phase: Phase | None = None
     plan: list[Suggestion] = field(default_factory=list)
     race_views: list[RaceView] = field(default_factory=list)
@@ -165,6 +167,14 @@ def build(db: Database, settings: Settings, today: date | None = None) -> Analys
         if d in an.daily:
             an.readiness_hist[d] = compute_readiness(d, an.daily)
     an.readiness = an.readiness_hist.get(today) or compute_readiness(today, an.daily)
+    trained = {date.fromisoformat(a["date"]) for a in acts
+               if a["trimp"] >= 20 or a["intensity"] in ("hard", "long", "strength", "race")}
+    consecutive, d = 0, today - timedelta(days=1)
+    while d in trained:
+        consecutive += 1
+        d -= timedelta(days=1)
+    an.form = assess_form(today, an.readiness, an.readiness_hist, an.daily, an.load_at(today), consecutive,
+                          feminine=settings.sex == "F")
 
     # --- Courses : facteur trail personnel puis pronostics -----------------------------
     factors = []

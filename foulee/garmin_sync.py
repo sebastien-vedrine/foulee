@@ -191,6 +191,43 @@ class GarminService:
                 return None
         return None
 
+    def fetch_races(self, today: date, max_course_details: int = 10) -> dict | None:
+        """Courses du calendrier Garmin (un an en arrière, 18 mois en avant) et parcours enregistrés.
+
+        Lecture seule. Pour une course du calendrier liée à un parcours, distance et D+ du parcours
+        sont ajoutés sous la clé « _course ». Renvoie None si Garmin n'a rien répondu.
+        """
+        from .race_search import trim_course
+
+        api = self.api
+        raw_events = self._call(api.get_calendar_events, (today - timedelta(days=365)).isoformat(),
+                                (today + timedelta(days=550)).isoformat())
+        raw_courses = self._call(api.get_courses)
+        if raw_events is None and raw_courses is None:
+            return None
+        events = raw_events
+        if isinstance(events, dict):
+            events = events.get("events") or events.get("calendarEvents") or []
+        events = [e for e in (events or []) if isinstance(e, dict)]
+        courses = raw_courses
+        if isinstance(courses, dict):
+            courses = courses.get("coursesForUser") or courses.get("courses") or []
+        courses = [trim_course(c) for c in (courses or []) if isinstance(c, dict)]
+        by_id = {c.get("courseId"): c for c in courses if c.get("courseId")}
+        fetched = 0
+        for e in events:
+            cid = e.get("courseId")
+            if not cid:
+                continue
+            c = by_id.get(cid)
+            if c is None and fetched < max_course_details:
+                fetched += 1
+                full = self._call(api.get_course, cid) or {}
+                c = {"distanceInMeters": full.get("distanceMeter"), "elevationGainInMeters": full.get("elevationGainMeter")}
+            if c:
+                e["_course"] = {"distance_m": c.get("distanceInMeters"), "elevation_m": c.get("elevationGainInMeters")}
+        return {"events": events, "courses": courses}
+
     def sync(self, db: Database, history_days: int, progress: Progress | None = None,
              should_stop: Callable[[], bool] | None = None) -> dict:
         if self.api is None:
@@ -238,6 +275,12 @@ class GarminService:
         lthr = parse_lthr(lt)
         if lthr:
             db.set_snapshot("lthr", today.isoformat(), lthr)
+
+        # 4. Courses du calendrier et parcours Garmin (recherche lors de l'ajout d'une course)
+        progress("Courses et parcours Garmin…", 1, 1)
+        races = self.fetch_races(today)
+        if races is not None:
+            db.set_snapshot("garmin_races", today.isoformat(), races)
         db.set_meta("last_sync", time.strftime("%Y-%m-%d %H:%M"))
         progress("Terminé", 1, 1)
         return stats

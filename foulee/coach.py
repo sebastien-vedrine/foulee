@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from itertools import combinations
 
 from .config import WEEKDAYS, Settings
-from .metrics import fmt_duration, fr, pace_str
+from .metrics import fmt_duration, fr, is_run, pace_str
 from .models import ActRec, Race
 from .readiness import Readiness
 
@@ -42,6 +43,19 @@ PHASE_TEXT = {
 }
 
 HARD_TARGET = {"base": 1, "developpement": 2, "specifique": 2, "affutage": 1, "entretien": 1, "recuperation": 0}
+
+# Sorties de course par semaine en mode automatique : plafond par phase. La cible réelle ne dépasse
+# pas l'habitude récente de plus d'une sortie (progression douce).
+AUTO_RUNS = {"entretien": 3, "base": 4, "developpement": 5, "specifique": 5, "affutage": 4, "recuperation": 3,
+             "course": 4}
+MIN_RUN_SLOT = 25   # minutes disponibles pour qu'un jour puisse accueillir une sortie
+
+
+def is_run_rec(a: ActRec) -> bool:
+    """Sortie de course (réelle ou simulée) pour le décompte hebdomadaire."""
+    if a.intensity in ("long", "hard", "race"):
+        return True
+    return a.intensity == "easy" and (a.type == "simulation" or is_run(a.type))
 
 
 @dataclass
@@ -185,6 +199,121 @@ class Coach:
         hard = [a for a in self.past if a.intensity == "hard"]
         return max(hard, key=lambda a: a.date).family if hard else None
 
+    # --- sorties de course par semaine -------------------------------------------
+    @property
+    def monday(self) -> date:
+        return self.day - timedelta(days=self.day.weekday())
+
+    def run_habit(self) -> float | None:
+        """Moyenne de jours de course par semaine sur les 6 semaines complètes précédentes."""
+        runs = [a.date for a in self.past if is_run_rec(a)]
+        if not runs:
+            return None
+        first = min(a.date for a in self.past)
+        counts = []
+        for w in range(1, 7):
+            start = self.monday - timedelta(weeks=w)
+            if start + timedelta(days=6) < first:
+                break
+            counts.append(len({d for d in runs if start <= d < start + timedelta(days=7)}))
+        return sum(counts) / len(counts) if counts else None
+
+    def run_slots(self) -> list[date]:
+        """Jours d'aujourd'hui à dimanche ayant assez de temps pour une sortie."""
+        return [self.day + timedelta(days=i) for i in range(7 - self.day.weekday())
+                if self.s.avail((self.day.weekday() + i) % 7) >= MIN_RUN_SLOT]
+
+    def run_target(self) -> tuple[int, bool]:
+        """(nombre de sorties visé cette semaine, automatique ?)."""
+        n = self.s.runs_per_week or 0
+        week_slots = sum(1 for i in range(7) if self.s.avail(i) >= MIN_RUN_SLOT)
+        if n > 0:
+            return min(n, max(week_slots, 1)), False
+        ph = self.phase.name
+        cap = AUTO_RUNS.get(ph, 4)
+        habit = self.run_habit()
+        if habit is None:
+            target = min(cap, 3)
+        elif ph == "entretien":
+            target = min(cap, max(2, round(habit)))
+        elif ph == "affutage":
+            target = min(cap, max(3, round(habit)))
+        elif ph == "recuperation":
+            target = min(cap, max(2, round(habit)))
+        else:
+            target = min(cap, max(3, round(habit) + 1))
+        return min(target, max(week_slots, 1)), True
+
+    def runs_this_week(self) -> int:
+        return len({a.date for a in self.past if a.date >= self.monday and is_run_rec(a)})
+
+    def run_days(self) -> set[date] | None:
+        """Jours retenus pour courir d'ici dimanche, ou None si chaque jour disponible doit l'être.
+
+        La sortie longue et les courses sont prioritaires ; les autres sorties sont espacées au maximum
+        (puis placées sur les jours les plus libres, au plus tôt).
+        """
+        if hasattr(self, "_run_days"):
+            return self._run_days
+        target, _ = self.run_target()
+        remaining = target - self.runs_this_week()
+        slots = self.run_slots()
+        chosen: set[date] | None
+        if remaining >= len(slots):
+            chosen = None
+        else:
+            chosen = {rc.date for rc in self.c.races if rc.date in slots}
+            remaining -= len(chosen)
+            since_long = self.days_since(lambda a: a.intensity in ("long", "race"))
+            for d in slots:
+                k = (d - self.day).days
+                if remaining > 0 and d not in chosen and self._is_long_day(d.weekday(), self.s.avail(d.weekday()), since_long + k):
+                    chosen.add(d)
+                    remaining -= 1
+                    break
+            cands = [d for d in slots if d not in chosen]
+            k = min(max(remaining, 0), len(cands))
+            if k:
+                last_run = self.day - timedelta(days=self.days_since(is_run_rec))
+                recent = {a.date for a in self.past if is_run_rec(a) and (self.day - a.date).days <= 7}
+                long_days = {d for d in chosen if d not in {rc.date for rc in self.c.races}}
+                fixed = chosen | recent | {last_run}
+
+                def score(extra: tuple[date, ...]):
+                    days = sorted(fixed | set(extra))
+                    gaps = [(b - a).days for a, b in zip(days, days[1:])]
+                    back_to_back = sum(1 for g in gaps if g == 1)
+                    streak = longest = 1
+                    for g in gaps:
+                        streak = streak + 1 if g == 1 else 1
+                        longest = max(longest, streak)
+                    eve_of_long = sum(1 for d in extra if d + timedelta(days=1) in long_days)
+                    return (-longest, -back_to_back, min(gaps, default=7), -eve_of_long,
+                            sum(self.s.avail(d.weekday()) for d in extra), -sum((d - self.day).days for d in extra))
+
+                chosen |= set(max(combinations(cands, k), key=score))
+        self._run_days = chosen
+        return chosen
+
+    def _off_day(self) -> Suggestion:
+        """Jour disponible mais sans sortie prévue : renfo si besoin, sinon repos."""
+        target, auto = self.run_target()
+        done = self.runs_this_week()
+        how = "automatique" if auto else "réglage"
+        if done >= target:
+            why = f"Tes {target} sorties de la semaine ({how}) sont faites ou prévues sur d'autres jours."
+        else:
+            why = f"{target} sorties prévues cette semaine ({how}), placées sur d'autres jours pour bien les espacer."
+        avail = self.s.avail(self.day.weekday())
+        since_strength = self.days_since(lambda a: a.intensity == "strength")
+        strength_week = self.count_week(lambda a: a.intensity == "strength")
+        if (self.phase.name != "recuperation" and strength_week < self._strength_target() and since_strength >= 2
+                and avail >= 25 and self.score >= 45):
+            sug = self._strength(min(avail, 45), light=self.phase.name == "affutage")
+            sug.reasons = [why] + sug.reasons
+            return sug
+        return self._rest("Jour sans course", [why])
+
     # --- utilitaires de présentation --------------------------------------------
     def zone(self, i: int) -> str:
         if not self.c.zones:
@@ -229,6 +358,13 @@ class Coach:
             out.append(f"Récupération après {ph.last_race.name}.")
         elif ph.name == "entretien":
             out.append("Aucune course objectif (A) programmée : entretien de la forme.")
+        target, auto = self.run_target()
+        txt = f"Objectif de la semaine : {target} sorties de course ({'automatique' if auto else 'réglage'}"
+        habit = self.run_habit() if auto else None
+        if habit is not None:
+            txt += f", habitude récente ≈ {fr(habit, 1).replace(',0', '')} par semaine"
+        done = self.runs_this_week() + (1 if any(a.date == self.day and is_run_rec(a) for a in self.c.history) else 0)
+        out.append(txt + f"), {done} déjà faite(s).")
         if self.real_readiness:
             r = self.c.readiness
             out.append(f"Disponibilité {self.score:.0f}/100 ({r.level.lower()}).")
@@ -275,6 +411,10 @@ class Coach:
         if avail <= 0:
             return self._rest("Pas de créneau prévu", [f"Aucune disponibilité le {WEEKDAYS[wd].lower()} dans tes réglages."])
 
+        # Jours de course retenus cette semaine (None = tous les jours disponibles)
+        run_days = self.run_days()
+        run_today = run_days is None or day in run_days
+
         # 4. Récupération après course
         if ph.name == "recuperation":
             ratio = ph.recovery_ratio or 0
@@ -282,6 +422,8 @@ class Coach:
                 return self._rest("Récupération post-course", ["Les premiers jours après une course, le repos est la meilleure séance."])
             if ratio > 0.6 and self.count_week(lambda a: a.intensity == "strength") == 0 and self.days_since(lambda a: a.intensity == "strength") >= 3:
                 return self._strength(min(avail, 30), light=True, reasons=["Reprise douce du renforcement."])
+            if not run_today:
+                return self._off_day()
             return self._z2(min(avail, 40), recovery=True, reasons=["Reprise progressive, sans intensité."])
 
         # 5. Trop de jours d'affilée
@@ -310,6 +452,8 @@ class Coach:
                 return self._activation(min(avail, 25))
             if d == 2:
                 return self._rest("Repos avant la course", ["Deux jours avant la course : on arrive frais."])
+            if not run_today:
+                return self._off_day()
             if since_hard >= 3 and self.count_last(6, lambda a: a.intensity == "hard") == 0 and self.score >= 60 and d >= 4 and avail >= 40:
                 return self._intervals(avail, taper=True, reasons=["Un rappel d'intensité court garde les jambes vives."])
             if d > 7 and strength_week == 0 and since_strength >= 3 and avail >= 25:
@@ -324,8 +468,12 @@ class Coach:
             dn = (nxt.date - day).days
             if dn == 1:
                 return self._activation(min(avail, 25), reasons=[f"{nxt.name} demain."])
-            if dn == 2 and nxt.priority == "B":
+            if dn == 2 and nxt.priority == "B" and run_today:
                 return self._z2(min(avail, 35), reasons=[f"{nxt.name} dans 2 jours : séance légère."])
+
+        # 8 bis. Jour sans sortie pour respecter le nombre de sorties de la semaine
+        if not run_today:
+            return self._off_day()
 
         # 9. Sortie longue
         if self._is_long_day(wd, avail, since_long) and self.score >= 50 and avail >= 75:
@@ -346,8 +494,9 @@ class Coach:
                 sug.complement = "Si l'énergie est là : 20–25 min de renfo juste après (séance dure = journée dure)."
             return sug
 
-        # 11. Renforcement
-        if strength_week < self._strength_target() and since_strength >= 2 and avail >= 25 and self.score >= 45:
+        # 11. Renforcement (si des jours sans sortie sont prévus, le renfo y est placé)
+        if (run_days is None and strength_week < self._strength_target() and since_strength >= 2
+                and avail >= 25 and self.score >= 45):
             sug = self._strength(min(avail, 45))
             runs_week = self.count_week(lambda a: a.intensity in ("easy", "long", "hard"))
             if avail >= 75 and runs_week < 3:
@@ -365,7 +514,11 @@ class Coach:
 
         # 14. Par défaut : endurance fondamentale
         strides = ph.name in ("base", "entretien", "developpement") and since_hard >= 4
-        return self._z2(min(avail, self._z2_minutes()), strides=strides)
+        sug = self._z2(min(avail, self._z2_minutes()), strides=strides)
+        if (run_days is not None and strength_week < self._strength_target() and since_strength >= 2
+                and not any(d > day and d not in run_days for d in self.run_slots())):
+            sug.complement = "Renfo de la semaine pas encore fait : ajoute 20–25 min de renfo après la sortie si l'énergie est là."
+        return sug
 
     # --- règles annexes ---------------------------------------------------------
     def _strength_target(self) -> int:

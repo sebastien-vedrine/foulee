@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("FOULEE_HOME", tempfile.mkdtemp())
 
 from foulee import metrics as M  # noqa: E402
+from foulee import race_search as RS  # noqa: E402
+from foulee.form import assess as assess_form  # noqa: E402
 from foulee.analysis import build  # noqa: E402
 from foulee.coach import Coach, CoachContext, compute_phase, plan_days  # noqa: E402
 from foulee.config import Settings  # noqa: E402
@@ -138,6 +140,135 @@ class CoachTest(unittest.TestCase):
         self.assertTrue({"FRACTIONNE", "RENFO"} & set(kinds))
 
 
+ALL_DAYS = {str(i): 90 for i in range(7)}
+MONDAY = TODAY - timedelta(days=TODAY.weekday())
+
+
+def runs_in(plan):
+    return [p.day for p in plan if p.intensity in ("easy", "long", "hard", "race")]
+
+
+def run_history(per_week: int, weeks: int = 8):
+    """Historique régulier : `per_week` footings par semaine (lun, mer, ven, dim, mar, jeu, sam)."""
+    order = [0, 2, 4, 6, 1, 3, 5][:per_week]
+    out = []
+    for w in range(1, weeks + 1):
+        start = MONDAY - timedelta(weeks=w)
+        out += [ActRec(start + timedelta(days=d), "running", "footing", 3000, 8, 50, "easy") for d in order]
+    return out
+
+
+class RunsPerWeekTest(unittest.TestCase):
+    def test_fixed_number_is_respected_and_spread(self):
+        plan = plan_days(ctx(day=MONDAY, availability=dict(ALL_DAYS), runs_per_week=3), 7)
+        days = runs_in(plan)
+        self.assertEqual(len(days), 3)
+        gaps = [(b - a).days for a, b in zip(days, days[1:])]
+        self.assertTrue(all(g >= 2 for g in gaps), days)
+
+    def test_auto_without_race_is_three(self):
+        plan = plan_days(ctx(day=MONDAY, history=run_history(5), availability=dict(ALL_DAYS)), 7)
+        self.assertEqual(len(runs_in(plan)), 3)
+        self.assertEqual(Coach(ctx(day=MONDAY, history=run_history(5))).run_target(), (3, True))
+
+    def test_auto_grows_by_one_towards_a_race(self):
+        race = Race(1, "U", MONDAY + timedelta(days=80), 60, 3000)   # phase développement
+        c = Coach(ctx(day=MONDAY, history=run_history(3), races=[race], availability=dict(ALL_DAYS)))
+        self.assertEqual(c.phase.name, "developpement")
+        self.assertEqual(c.run_target(), (4, True))
+        c = Coach(ctx(day=MONDAY, history=run_history(6), races=[race], availability=dict(ALL_DAYS)))
+        self.assertEqual(c.run_target(), (5, True))
+
+    def test_target_capped_by_available_days(self):
+        avail = {"0": 0, "1": 0, "2": 60, "3": 0, "4": 0, "5": 0, "6": 120}
+        self.assertEqual(Coach(ctx(day=MONDAY, availability=avail, runs_per_week=5)).run_target(), (2, False))
+
+    def test_off_day_offers_strength_or_rest(self):
+        plan = plan_days(ctx(day=MONDAY, availability=dict(ALL_DAYS), runs_per_week=3, strength_per_week=1), 7)
+        off = [p for p in plan if p.intensity in ("rest", "strength")]
+        self.assertEqual(len(off), 4)
+        self.assertEqual(sum(1 for p in off if p.kind == "RENFO"), 1)
+
+
+class RaceSearchTest(unittest.TestCase):
+    def test_garmin_event_and_course(self):
+        ev = {"eventName": "Trail des Écureuils", "date": "2027-03-14", "location": "Annecy",
+              "completionTarget": {"value": 42000.0, "unit": "meter", "unitType": "distance"},
+              "eventType": "trail_running", "_course": {"distance_m": 41800, "elevation_m": 2100},
+              "eventCustomization": {"customGoal": {"value": 18000, "unit": "second", "unitType": "time"}}}
+        h = RS.parse_garmin_event(ev)
+        self.assertEqual((h.name, h.date, h.distance_km, h.elevation_m, h.kind, h.goal_s),
+                         ("Trail des Écureuils", date(2027, 3, 14), 42.0, 2100, "trail", 18000))
+        c = RS.parse_garmin_course({"courseName": "UTMB ETM 50k Mallorca", "distanceInMeters": 55431.96,
+                                    "elevationGainInMeters": 2289.38, "activityType": {"typeKey": "running"}})
+        self.assertAlmostEqual(c.distance_km, 55.43, places=2)
+        self.assertEqual(c.kind, "trail")    # 41 m de D+ par km
+        self.assertIsNone(RS.parse_garmin_event({"date": "2027-01-01"}))
+
+    def test_garmin_hits_order_and_filter(self):
+        snap = {"events": [{"eventName": "Passée", "date": "2026-01-10"}, {"eventName": "Future", "date": "2027-01-10"}],
+                "courses": [{"courseName": "Écotrail Paris 45 km", "distanceInMeters": 45000}]}
+        hits = RS.garmin_hits(snap, TODAY)
+        self.assertEqual([h.name for h in hits], ["Future", "Passée", "Écotrail Paris 45 km"])
+        self.assertEqual([h.name for h in RS.filter_hits(hits, "ecotrail paris")], ["Écotrail Paris 45 km"])
+        self.assertEqual(RS.garmin_hits(None, TODAY), [])
+
+    def test_utmb_payload(self):
+        payload = {"races": [
+            {"name": "HOKA UTMB Mont-Blanc - CCC", "startDate": "27th August 2027", "startLocation": "undefined",
+             "details": {"statsUp": [{"name": "distance", "value": "101.00"}, {"name": "elevationGain", "value": 6050}]}},
+            {"name": "Lavaredo Ultra Trail - 20K", "startDate": "24th June 2027", "startLocation": "Cortina",
+             "details": {"statsUp": [{"name": "distance", "value": 20}]}}]}
+        hits = RS.parse_utmb(payload, "ccc mont blanc")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual((hits[0].date, hits[0].distance_km, hits[0].elevation_m, hits[0].location),
+                         (date(2027, 8, 27), 101.0, 6050, ""))
+        self.assertEqual(RS.parse_utmb_date("1st May 2027"), date(2027, 5, 1))
+        self.assertIsNone(RS.parse_utmb_date("bientôt"))
+
+    def test_gpx(self):
+        pts = "".join(f'<trkpt lat="45.0" lon="{6 + i * 0.001:.3f}"><ele>{e}</ele></trkpt>'
+                      for i, e in enumerate([1000, 1001, 1000, 1010, 1020, 1015, 1030]))
+        gpx = (f'<?xml version="1.0"?><gpx xmlns="http://www.topografix.com/GPX/1/1"><metadata><name>Mon trail</name>'
+               f'</metadata><trk><trkseg>{pts}</trkseg></trk></gpx>').encode()
+        h = RS.parse_gpx(gpx)
+        self.assertEqual(h.name, "Mon trail")
+        self.assertAlmostEqual(h.distance_km, 0.5, delta=0.05)   # 6 × 78,7 m
+        self.assertEqual(h.elevation_m, 35)                      # bruit de ±1 m ignoré : 1000 → 1020 puis 1015 → 1030
+        with self.assertRaises(RS.SearchError):
+            RS.parse_gpx(b"<gpx></gpx>")
+
+
+class FormTest(unittest.TestCase):
+    def test_alert_when_hrv_crashes_and_rhr_rises(self):
+        r = Readiness(TODAY, 40)
+        r.hrv_z, r.rhr_delta = -2.0, 6
+        fm = assess_form(TODAY, r, {}, {}, {"tsb": 0, "ctl": 50, "acwr": 1.0})
+        self.assertEqual(fm.state, "alerte")
+        self.assertIn("VFC sous ta normale", fm.negatives)
+
+    def test_energetic_and_tired(self):
+        good = Readiness(TODAY, 85)
+        good.hrv_z, good.rhr_delta, good.sleep_h = 0.8, -3, 7.8
+        fm = assess_form(TODAY, good, {}, {TODAY: {"bb_wake": 90}}, {"tsb": 8, "ctl": 50, "acwr": 0.9})
+        self.assertEqual(fm.state, "energique")
+        self.assertEqual(fm.negatives, [])
+        self.assertTrue(fm.measured)
+        bad = Readiness(TODAY, 38)
+        self.assertEqual(assess_form(TODAY, bad, {}, {}, {"tsb": -30, "ctl": 50}, 5, feminine=True).title, "Fatiguée")
+
+    def test_without_health_data(self):
+        fm = assess_form(TODAY, None, {}, {}, {"tsb": -28, "ctl": 60, "acwr": 1.5})
+        self.assertFalse(fm.measured)
+        self.assertIn("Pas de mesure santé", fm.message)
+        self.assertEqual(assess_form(TODAY, None, {}, {}, {}).state, "inconnue")
+
+    def test_trend(self):
+        hist = {TODAY - timedelta(days=i): Readiness(TODAY - timedelta(days=i), 80 if i <= 2 else 60) for i in range(10)}
+        fm = assess_form(TODAY, hist[TODAY], hist, {}, {"tsb": 0, "ctl": 50})
+        self.assertIn("remonte", fm.message)
+
+
 class DemoIntegrationTest(unittest.TestCase):
     def test_build_on_demo(self):
         db = Database(":memory:")
@@ -147,6 +278,8 @@ class DemoIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(an.vo2max)
         self.assertEqual(len(an.plan), 7)
         self.assertTrue(all(rv.prognosis_s for rv in an.race_views))
+        self.assertIsNotNone(an.form)
+        self.assertTrue(an.form.title)
 
 
 if __name__ == "__main__":

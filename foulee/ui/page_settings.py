@@ -151,9 +151,19 @@ class SettingsPage(QWidget):
         self.long_day.addItem("Automatique", -1)
         for i, d in enumerate(WEEKDAYS):
             self.long_day.addItem(d, i)
+        self.runs = QComboBox()
+        self.runs.setMinimumWidth(240)
+        self.runs.addItem("Automatique", 0)
+        for n in range(2, 8):
+            self.runs.addItem(f"{n} par semaine", n)
+        form.addRow("Sorties de course", self.runs)
         form.addRow("Séances de renfo", self.strength)
         form.addRow("Jour de sortie longue", self.long_day)
         lay.addLayout(form)
+        lay.addWidget(label("Automatique : 3 sorties sans course objectif, jusqu'à 4 ou 5 à l'approche d'une course A, "
+                            "sans dépasser ton habitude récente de plus d'une sortie ; moins pendant l'affûtage et la "
+                            "récupération. Les autres jours disponibles accueillent le renfo ou du repos.",
+                            "small", wrap=True))
         root.addWidget(f)
 
         # Données
@@ -192,6 +202,7 @@ class SettingsPage(QWidget):
         for i, sb in enumerate(self.avail):
             sb.setValue(s.avail(i))
         self.strength.setValue(s.strength_per_week)
+        self.runs.setCurrentIndex(max(0, self.runs.findData(s.runs_per_week)))
         self.long_day.setCurrentIndex(max(0, self.long_day.findData(s.long_run_day)))
         self.demo.setChecked(s.demo)
 
@@ -228,6 +239,7 @@ class SettingsPage(QWidget):
         s.vo2_factor = round(self.vo2f.value(), 2)
         s.availability = {str(i): sb.value() for i, sb in enumerate(self.avail)}
         s.strength_per_week = self.strength.value()
+        s.runs_per_week = int(self.runs.currentData())
         s.long_run_day = self.long_day.currentData()
         s.demo = self.demo.isChecked()
         s.save()

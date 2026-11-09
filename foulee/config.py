@@ -22,6 +22,7 @@ class Settings:
     zone_method: str = "auto"      # auto | lthr | reserve | fcmax
     availability: dict = field(default_factory=lambda: dict(DEFAULT_AVAILABILITY))
     strength_per_week: int = 2
+    runs_per_week: int = 0         # 0 = automatique (selon la phase et l'habitude récente)
     long_run_day: int = -1         # -1 = automatique (jour le plus disponible du week-end)
     vo2_factor: float = 1.0        # facteur de correction de la VO2max effective
     history_days: int = 120        # historique santé récupéré à la première synchro
