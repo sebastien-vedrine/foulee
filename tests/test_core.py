@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("FOULEE_HOME", tempfile.mkdtemp())
 
 from foulee import metrics as M  # noqa: E402
+from foulee import progress as P  # noqa: E402
 from foulee import race_search as RS  # noqa: E402
 from foulee.form import assess as assess_form  # noqa: E402
 from foulee.analysis import build  # noqa: E402
@@ -269,6 +270,82 @@ class FormTest(unittest.TestCase):
         self.assertIn("remonte", fm.message)
 
 
+def run(i, day, label="AEROBIC_BASE", minutes=50, hr=150.0, gap=2.8, **kw):
+    a = {"id": i, "date": day.isoformat(), "type": "running", "name": f"Sortie {i}", "te_label": label,
+         "moving_s": minutes * 60, "duration_s": minutes * 60, "distance_m": (gap or 2.8) * minutes * 60, "avg_hr": hr,
+         "gap_speed": gap, "elev_gain": 0, "is_race": 0}
+    a.update(kw)
+    return a
+
+
+class ProgressTest(unittest.TestCase):
+    def test_categories(self):
+        self.assertEqual(P.category(run(1, TODAY, "TEMPO")), "tempo")
+        self.assertEqual(P.category(run(1, TODAY, "LACTATE_THRESHOLD")), "seuil")
+        self.assertEqual(P.category(run(1, TODAY, "VO2MAX")), "vo2")
+        self.assertEqual(P.category(run(1, TODAY, "RECOVERY")), "footing")
+        self.assertEqual(P.category(run(1, TODAY, minutes=110)), "longue")
+        self.assertEqual(P.category(run(1, TODAY, "TEMPO", minutes=110)), "tempo")
+        self.assertEqual(P.category(run(1, TODAY, "TEMPO", minutes=160)), "longue")
+        self.assertIsNone(P.category(run(1, TODAY, minutes=10)))
+        self.assertIsNone(P.category(run(1, TODAY, is_race=1)))
+        self.assertIsNone(P.category(run(1, TODAY, type="strength_training")))
+        self.assertEqual(P.category(run(1, TODAY, label=None, intensity="hard", family="vo2")), "vo2")
+
+    def test_adjusted_speed_fallback(self):
+        self.assertAlmostEqual(P.adjusted_speed(run(1, TODAY, gap=3.0)), 180.0)
+        flat = run(1, TODAY, gap=None, distance_m=10000, moving_s=3000, elev_gain=40)
+        self.assertAlmostEqual(P.adjusted_speed(flat), 200.0)
+        hilly = run(1, TODAY, gap=None, distance_m=10000, moving_s=3000, elev_gain=400)
+        self.assertIsNone(P.adjusted_speed(hilly))
+
+    def test_compare_with_previous_same_type(self):
+        acts = [run(i, TODAY - timedelta(days=30 - 3 * i), "TEMPO", hr=160, gap=3.0) for i in range(5)]
+        acts.append(run(9, TODAY - timedelta(days=1), "AEROBIC_BASE", hr=140, gap=2.5))   # autre type
+        acts.append(run(10, TODAY, "TEMPO", hr=156, gap=3.1))
+        pts = P.points(acts)
+        cmp = P.compare(pts, 10)
+        self.assertEqual(cmp.label, "Tempo")
+        self.assertEqual(len(cmp.peers), 5)
+        self.assertAlmostEqual(cmp.hr_delta, -4)
+        self.assertLess(cmp.pace_delta_s, 0)
+        self.assertGreater(cmp.eff_delta_pct, 5)
+        self.assertEqual((cmp.rank, cmp.ranked), (1, 6))
+        self.assertIsNone(P.compare(pts, 0))          # pas assez de sorties avant la première
+
+    def test_trend_and_sentence(self):
+        acts = [run(i, TODAY - timedelta(days=100 - 7 * i), hr=150, gap=2.7) for i in range(8)]
+        acts += [run(20 + i, TODAY - timedelta(days=30 - 7 * i), hr=148, gap=2.85) for i in range(4)]
+        tr = P.trend(P.points(acts), "footing", TODAY)
+        self.assertEqual((len(tr.recent), len(tr.before)), (4, 8))
+        self.assertGreater(tr.eff_pct, 5)
+        self.assertIn("plus vite", tr.sentence())
+        self.assertIsNone(P.trend(P.points(acts), "tempo", TODAY).eff_pct)
+
+    def test_records(self):
+        acts = [run(1, TODAY - timedelta(days=200), best_5000=1250.0, best_1000=230.0),
+                run(2, TODAY - timedelta(days=20), best_5000=1300.0, best_1000=228.0)]
+        recs = {r.label: r for r in P.records(acts, TODAY)}
+        self.assertEqual(recs["5 km"].best_s, 1250.0)
+        self.assertEqual(recs["5 km"].recent_s, 1300.0)
+        self.assertAlmostEqual(recs["5 km"].gap_pct, 4.0)
+        self.assertEqual(recs["1 km"].gap_pct, 0.0)
+        self.assertNotIn("10 km", recs)
+
+    def test_db_reads_garmin_extras(self):
+        db = Database(":memory:")
+        row = parse_activity({"activityId": 5, "startTimeLocal": "2026-11-07 08:30:00",
+                              "activityType": {"typeKey": "running"}, "distance": 8000, "duration": 2900,
+                              "avgGradeAdjustedSpeed": 2.75, "fastestSplit_1000": 347.5, "fastestSplit_5000": 2064.7})
+        db.upsert_activities([row])
+        db.upsert_activities([{**row, "id": 6, "raw": None}])
+        got = {a["id"]: a for a in db.activities()}
+        self.assertAlmostEqual(got[5]["gap_speed"], 2.75)
+        self.assertAlmostEqual(got[5]["best_5000"], 2064.7)
+        self.assertIsNone(got[5]["best_10000"])
+        self.assertIsNone(got[6]["gap_speed"])
+
+
 class DemoIntegrationTest(unittest.TestCase):
     def test_build_on_demo(self):
         db = Database(":memory:")
@@ -280,6 +357,11 @@ class DemoIntegrationTest(unittest.TestCase):
         self.assertTrue(all(rv.prognosis_s for rv in an.race_views))
         self.assertIsNotNone(an.form)
         self.assertTrue(an.form.title)
+        self.assertGreater(len(an.progress), 30)
+        self.assertTrue(any(p.efficiency for p in an.progress))
+        self.assertTrue(an.records)
+        last = [p for p in an.progress if p.category == "footing"][-1]
+        self.assertIsNotNone(P.compare(an.progress, last.id))
 
 
 if __name__ == "__main__":

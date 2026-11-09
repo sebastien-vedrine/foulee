@@ -9,9 +9,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QGridLayout, QHeade
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import metrics as M
+from .. import progress as P
 from ..analysis import Analysis
 from .theme import C, KIND_COLORS
-from .widgets import StackedBar, card, clear_layout, hbox, label
+from .page_progress import comparison_block
+from .widgets import StackedBar, card, clear_layout, hbox, label, rule
 
 TYPE_LABELS = {
     "running": "Course", "trail_running": "Trail", "treadmill_running": "Tapis", "track_running": "Piste",
@@ -74,10 +76,11 @@ class ActivitiesPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._show_detail)
-        root.addWidget(self.table, 3)
+        self.table.setMinimumHeight(220)
+        root.addWidget(self.table, 1)
         self.detail_frame, self.detail = card()
         self.detail_frame.setMinimumHeight(150)
-        root.addWidget(self.detail_frame, 1)
+        root.addWidget(self.detail_frame, 0)
 
     def update_data(self, an: Analysis) -> None:
         self.an = an
@@ -145,6 +148,9 @@ class ActivitiesPage(QWidget):
         bits.append(M.fmt_duration(a.get("duration_s")))
         if a.get("elev_gain"):
             bits.append(f"{M.fr(a['elev_gain'], 0)} m D+")
+        cat = P.category(a)
+        if cat:
+            bits.append(f"séance « {P.CATEGORIES[cat]} »")
         self.detail.addWidget(label(", ".join(bits), "muted"))
         grid = QGridLayout()
         grid.setHorizontalSpacing(28)
@@ -176,4 +182,8 @@ class ActivitiesPage(QWidget):
                 leg.addWidget(lb)
             leg.addStretch(1)
             self.detail.addLayout(leg)
+        cmp = P.compare(self.an.progress, a["id"]) if cat else None
+        if cmp:
+            self.detail.addWidget(rule())
+            self.detail.addLayout(comparison_block(cmp))
         self.detail.addStretch(1)

@@ -17,6 +17,7 @@ from ..paths import db_path, token_dir
 from .page_activities import ActivitiesPage
 from .page_charts import HealthPage, LoadPage
 from .page_perf import PerfPage
+from .page_progress import ProgressPage
 from .page_races import RacesPage
 from .page_settings import LoginDialog, SettingsPage
 from .page_today import TodayPage
@@ -54,8 +55,10 @@ class MainWindow(QMainWindow):
         self.acts = ActivitiesPage()
         self.races = RacesPage(lambda: self.db)
         self.perf = PerfPage()
+        self.progress_page = ProgressPage()
         self.settings_page = SettingsPage(self.settings)
-        self.pages = [self.today, self.load_page, self.health, self.acts, self.races, self.perf, self.settings_page]
+        self.pages = [self.today, self.load_page, self.health, self.acts, self.races, self.perf, self.progress_page,
+                      self.settings_page]
         for p in self.pages:
             self.stack.addWidget(p)
         self.nav_buttons[0].setChecked(True)
@@ -87,7 +90,7 @@ class MainWindow(QMainWindow):
         v.addWidget(sub)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
-        for i, name in enumerate(["Aujourd'hui", "Charge", "Récupération", "Activités", "Courses", "Performance", "Réglages"]):
+        for i, name in enumerate(["Aujourd'hui", "Charge", "Récupération", "Activités", "Courses", "Performance", "Progression", "Réglages"]):
             b = QPushButton(name)
             b.setObjectName("nav")
             b.setCheckable(True)

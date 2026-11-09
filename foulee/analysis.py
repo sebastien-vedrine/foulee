@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from statistics import median
 
 from . import metrics as M
+from . import progress as P
 from .coach import CoachContext, Phase, Suggestion, compute_phase, plan_days
 from .config import Settings
 from .db import Database
@@ -67,6 +68,8 @@ class Analysis:
     readiness: Readiness | None = None
     readiness_hist: dict = field(default_factory=dict)
     form: FormReport | None = None
+    progress: list[P.RunPoint] = field(default_factory=list)
+    records: list[P.Record] = field(default_factory=list)
     phase: Phase | None = None
     plan: list[Suggestion] = field(default_factory=list)
     race_views: list[RaceView] = field(default_factory=list)
@@ -175,6 +178,10 @@ def build(db: Database, settings: Settings, today: date | None = None) -> Analys
         d -= timedelta(days=1)
     an.form = assess_form(today, an.readiness, an.readiness_hist, an.daily, an.load_at(today), consecutive,
                           feminine=settings.sex == "F")
+
+    # --- Progression ------------------------------------------------------------------
+    an.progress = P.points(acts)
+    an.records = P.records(acts, today)
 
     # --- Courses : facteur trail personnel puis pronostics -----------------------------
     factors = []

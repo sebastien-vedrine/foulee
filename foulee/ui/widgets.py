@@ -38,6 +38,7 @@ def clear_layout(lay: QLayout) -> None:
         item = lay.takeAt(0)
         w = item.widget()
         if w is not None:
+            w.hide()
             w.deleteLater()
         elif item.layout() is not None:
             clear_layout(item.layout())

@@ -7,10 +7,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from .. import metrics as M
+from .. import progress as P
 from ..analysis import Analysis
 from ..coach import Suggestion
 from ..form import FormReport
 from ..readiness import LABELS
+from .page_progress import comparison_block
 from .theme import C, KIND_COLORS, level_color
 from .widgets import Balise, Bar, Gauge, Tile, card, clear_layout, hbox, label, rule, scroll_page, vbox
 
@@ -92,6 +94,14 @@ class TodayPage(QWidget):
         self.root.addLayout(vbox(label(long_date(today), "h1"), label(sub, "muted"), spacing=2))
         if an.form:
             self.root.addWidget(self._form_card(an.form))
+        for p in [p for p in an.progress if p.day == today][-1:]:
+            cmp = P.compare(an.progress, p.id)
+            if cmp:
+                f, lay = card()
+                lay.setContentsMargins(22, 16, 22, 16)
+                lay.addWidget(label(f"Ta sortie du jour : {p.name or cmp.label}", "h2"))
+                lay.addLayout(comparison_block(cmp))
+                self.root.addWidget(f)
 
         top = QHBoxLayout()
         top.setSpacing(18)

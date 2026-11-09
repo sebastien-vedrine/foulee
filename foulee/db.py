@@ -15,6 +15,11 @@ DAILY_COLS = ["date", "hrv_night", "hrv_weekly", "hrv_base_low", "hrv_base_high"
               "deep_s", "light_s", "rem_s", "awake_s", "sleep_score", "bb_wake", "bb_high", "bb_low", "stress_avg",
               "readiness", "readiness_level", "recovery_min", "steps", "raw"]
 
+# Champs lus directement dans le JSON Garmin conservé (pas besoin de resynchroniser)
+ACT_EXTRAS = {"gap_speed": "avgGradeAdjustedSpeed", "best_1000": "fastestSplit_1000", "best_5000": "fastestSplit_5000",
+              "best_10000": "fastestSplit_10000", "best_21098": "fastestSplit_21098",
+              "best_42195": "fastestSplit_42195"}
+
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS activities (
     id INTEGER PRIMARY KEY, start TEXT, date TEXT, type TEXT, name TEXT,
@@ -54,7 +59,9 @@ class Database:
         self.conn.commit()
 
     def activities(self, since: str | None = None) -> list[dict]:
-        cols = ",".join(c for c in ACT_COLS if c != "raw")
+        cols = ",".join([*(c for c in ACT_COLS if c != "raw"),
+                         *(f"CASE WHEN json_valid(raw) THEN json_extract(raw, '$.{k}') END AS {name}"
+                           for name, k in ACT_EXTRAS.items())])
         if since:
             cur = self.conn.execute(f"SELECT {cols} FROM activities WHERE date >= ? ORDER BY start", (since,))
         else:

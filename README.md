@@ -55,7 +55,15 @@ le sommeil de la nuit sont alors disponibles pour la suggestion du jour.
 | Endurance pour une course | Inspirée de la « forme marathon » de Runalyze, en km-effort : volume hebdomadaire (26 semaines) et sorties longues (70 jours) comparés aux exigences de la course |
 | Pronostics | Tables de Daniels ; au-delà du marathon, exposant de fatigue 1,15 ; trail en km-effort × technicité, calibré par tes résultats passés |
 | Disponibilité du jour | VFC vs ta normale sur 60 jours, FC de repos vs médiane 30 jours, sommeil, Body Battery au réveil, disponibilité Garmin, stress de la veille |
+| Efficacité (progression) | Vitesse ajustée à la pente (Garmin) divisée par la FC moyenne : mètres parcourus par battement. Comparée entre sorties du même type (footing, tempo, seuil, VO2max, sortie longue, d'après l'effet d'entraînement principal de la montre) |
 | Forme du jour | Message en clair (plein d'énergie, en forme, fatigue d'entraînement, fatigué, organisme en alerte…) tiré de la disponibilité, de la charge (TSB, ratio aigu/chronique, jours d'affilée) et de l'évolution sur 3 jours vs la semaine passée, avec points forts et points à surveiller |
+
+**Progression.** La page du même nom compare tes 6 dernières semaines aux 18 précédentes pour chaque
+type de séance (efficacité, FC moyenne, allure ajustée), trace leur évolution et liste tes meilleurs temps
+sur 1 km, 5 km, 10 km, semi et marathon (meilleurs passages mesurés par la montre, y compris au sein d'une
+sortie plus longue). La fiche d'une activité, et la page du jour quand tu as couru, la comparent à tes
+10 sorties précédentes du même type sur 4 mois : FC moyenne, allure ajustée, efficacité et rang.
+Les sorties de moins de 15 min, les courses et les FC moyennes sous 100 bpm (capteur décroché) sont écartées.
 
 Le **km-effort** vaut la distance en km plus le dénivelé positif divisé par 100.
 
@@ -121,6 +129,7 @@ foulee/
   metrics.py      indicateurs (TRIMP, charge, VO2max, endurance, pronostics, zones, allures)
   readiness.py    disponibilité du jour
   form.py         bilan de forme du jour (message en clair)
+  progress.py     progression : types de séance, efficacité, comparaisons, meilleurs temps
   coach.py        phases, règles et séances, sorties par semaine, projection 7 jours
   race_search.py  recherche de courses (Garmin, UTMB World Series, GPX)
   analysis.py     assemble données stockées et indicateurs

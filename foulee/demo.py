@@ -104,6 +104,13 @@ def generate(db: Database, today: date | None = None, days: int = 240, seed: int
                          **zones)
                 if kind == "race":
                     a["eventType"] = {"typeKey": "race"}
+                # Allure ajustée à la pente et meilleurs passages, comme dans les données Garmin
+                flat = dist / (minutes * 60) * 1.25 if kind == "race" else v / 60
+                a["avgGradeAdjustedSpeed"] = flat
+                boost = 1.12 if kind == "hard" else 1.04
+                for m, slow in ((1000, 1.0), (5000, 0.97), (10000, 0.95)):
+                    if dist >= m:
+                        a[f"fastestSplit_{m}"] = m / (flat * boost * slow * rnd.uniform(0.98, 1.02))
             from .garmin_sync import parse_activity
             row = parse_activity(a)
             acts.append(row)
